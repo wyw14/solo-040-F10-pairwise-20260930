@@ -52,6 +52,11 @@ func (c *Coordinator) Start(ctx context.Context, plan model.ConvoyPlan) (model.T
 	if _, err := c.recorder.Record(ctx, plan.ChamberID, model.EventCycleCreated, cycleValue.ID, cycleValue.Generation, cycleValue); err != nil {
 		return model.TransitCycle{}, err
 	}
+	// A new generation starts with an empty level window: evidence from the
+	// previous lockage must not carry into this decision.
+	if err := c.hydraulics.BeginCycle(cycleValue); err != nil {
+		return model.TransitCycle{}, err
+	}
 	return cycleValue, nil
 }
 
@@ -101,8 +106,10 @@ func (c *Coordinator) ApplyGateAck(ctx context.Context, ack model.DeviceAck) err
 	if err != nil {
 		return err
 	}
-	if next == model.StageLeveling {
-		if err := c.hydraulics.BeginLeveling(cycleValue); err != nil {
+	if next == model.StageSealed {
+		// Gates are shut and equalization begins: level evidence for the
+		// upcoming release is collected from a fresh window.
+		if err := c.hydraulics.BeginObservation(cycleValue); err != nil {
 			return err
 		}
 	}
@@ -142,4 +149,7 @@ func (c *Coordinator) Restore(cycleValue model.TransitCycle) {
 		c.generations[cycleValue.ChamberID] = cycleValue.Generation
 	}
 	c.mu.Unlock()
+	// Rebind an empty window to the restored generation; level evidence is
+	// runtime telemetry and must be re-collected after a restart.
+	_ = c.hydraulics.BeginCycle(cycleValue)
 }

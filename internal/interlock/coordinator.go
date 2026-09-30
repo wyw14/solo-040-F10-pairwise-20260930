@@ -9,36 +9,51 @@ import (
 	"github.com/wyw14/cry-96/internal/model"
 )
 
+// LevelEvidence bundles the stability verdict and the latest reading state
+// the policy needs, sourced from the hydraulics controller.
+type LevelEvidence struct {
+	Assessment model.LevelAssessment
+	LatestM    float64
+	// Usable reports the newest reading is trusted; Present reports whether
+	// any reading exists for the current generation.
+	Usable  bool
+	Present bool
+}
+
 // Coordinator keeps policy evaluation and command reservation in one flow.
 type Coordinator struct {
 	policy    Policy
 	arbiter   *Arbiter
 	gates     *gate.Controller
-	level     func(string) float64
+	levels    func(chamberID string, stage model.TransitStage) LevelEvidence
 	emergency func(string) bool
 }
 
-func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, level func(string) float64, emergency func(string) bool) *Coordinator {
-	return &Coordinator{policy: policy, arbiter: arbiter, gates: gates, level: level, emergency: emergency}
+func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, levels func(chamberID string, stage model.TransitStage) LevelEvidence, emergency func(string) bool) *Coordinator {
+	return &Coordinator{policy: policy, arbiter: arbiter, gates: gates, levels: levels, emergency: emergency}
 }
 
-func (c *Coordinator) Snapshot(chamberID string) EquipmentSnapshot {
-	level := 0.0
-	if c.level != nil {
-		level = c.level(chamberID)
+func (c *Coordinator) Snapshot(chamberID string, stage model.TransitStage) EquipmentSnapshot {
+	snapshot := EquipmentSnapshot{
+		ChamberID: chamberID, Stage: stage,
+		Gates: c.gates.State().Snapshot(chamberID),
 	}
-	emergency := false
+	if c.levels != nil {
+		evidence := c.levels(chamberID, stage)
+		snapshot.LevelM = evidence.LatestM
+		snapshot.LevelMUsable = evidence.Usable
+		snapshot.LevelMPresent = evidence.Present
+		level := evidence.Assessment
+		snapshot.Level = &level
+	}
 	if c.emergency != nil {
-		emergency = c.emergency(chamberID)
+		snapshot.Emergency = c.emergency(chamberID)
 	}
-	return EquipmentSnapshot{
-		ChamberID: chamberID, Gates: c.gates.State().Snapshot(chamberID),
-		LevelM: level, Emergency: emergency,
-	}
+	return snapshot
 }
 
 func (c *Coordinator) RequestOpen(ctx context.Context, cycle model.TransitCycle, direction model.Direction, owner string) (model.DeviceCommand, error) {
-	if err := c.policy.ValidateOpen(c.Snapshot(cycle.ChamberID), direction); err != nil {
+	if err := c.policy.ValidateOpen(c.Snapshot(cycle.ChamberID, cycle.Stage), direction); err != nil {
 		return model.DeviceCommand{}, err
 	}
 	var command model.DeviceCommand
@@ -51,7 +66,7 @@ func (c *Coordinator) RequestOpen(ctx context.Context, cycle model.TransitCycle,
 }
 
 func (c *Coordinator) RequestClose(ctx context.Context, cycle model.TransitCycle, direction model.Direction) (model.DeviceCommand, error) {
-	if err := c.policy.ValidateClose(c.Snapshot(cycle.ChamberID), direction); err != nil {
+	if err := c.policy.ValidateClose(c.Snapshot(cycle.ChamberID, cycle.Stage), direction); err != nil {
 		return model.DeviceCommand{}, err
 	}
 	return c.gates.Request(ctx, cycle, direction, false)

@@ -15,27 +15,34 @@ type ChamberView struct {
 	ChamberID string                                 `json:"chamber_id"`
 	Cycle     *model.TransitCycle                    `json:"cycle,omitempty"`
 	Gates     map[model.Direction]model.GatePosition `json:"gates"`
+	Level     model.LevelAssessment                  `json:"level"`
 	Queue     []admission.QueueEntry                 `json:"queue"`
 	Signals   []model.SignalState                    `json:"signals"`
 	Emergency model.EmergencyRecord                  `json:"emergency"`
 	UpdatedAt time.Time                              `json:"updated_at"`
 }
 
+// LevelAssessor yields the stability verdict for a chamber at a stage.
+type LevelAssessor interface {
+	Assessment(chamberID string, stage model.TransitStage) model.LevelAssessment
+}
+
 // Snapshot aggregates current responsibilities without taking ownership.
 type Snapshot struct {
 	cycles  *cycle.Coordinator
 	gates   *gate.State
+	levels  LevelAssessor
 	queue   *admission.Service
 	signals *signal.Service
 	safety  *safety.Service
 	now     func() time.Time
 }
 
-func NewSnapshot(cycles *cycle.Coordinator, gates *gate.State, queue *admission.Service, signals *signal.Service, safetyService *safety.Service, now func() time.Time) *Snapshot {
+func NewSnapshot(cycles *cycle.Coordinator, gates *gate.State, levels LevelAssessor, queue *admission.Service, signals *signal.Service, safetyService *safety.Service, now func() time.Time) *Snapshot {
 	if now == nil {
 		now = time.Now
 	}
-	return &Snapshot{cycles: cycles, gates: gates, queue: queue, signals: signals, safety: safetyService, now: now}
+	return &Snapshot{cycles: cycles, gates: gates, levels: levels, queue: queue, signals: signals, safety: safetyService, now: now}
 }
 
 func (s *Snapshot) Chamber(chamberID string) ChamberView {
@@ -44,8 +51,13 @@ func (s *Snapshot) Chamber(chamberID string) ChamberView {
 		Queue: s.queue.List(chamberID), Signals: s.signals.States(),
 		Emergency: s.safety.Status(chamberID), UpdatedAt: s.now().UTC(),
 	}
+	stage := model.TransitStage("")
 	if cycleValue, ok := s.cycles.Current(chamberID); ok {
 		view.Cycle = &cycleValue
+		stage = cycleValue.Stage
+	}
+	if s.levels != nil {
+		view.Level = s.levels.Assessment(chamberID, stage)
 	}
 	return view
 }

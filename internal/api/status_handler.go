@@ -22,8 +22,14 @@ func interlocksHandler(runtime *Runtime) http.HandlerFunc {
 			if reserved {
 				reservationValue = reservation
 			}
+			cycleValue, hasCycle := runtime.Cycles.Current(chamberID)
+			stage := model.TransitStage("")
+			if hasCycle {
+				stage = cycleValue.Stage
+			}
 			result[chamberID] = map[string]any{
-				"equipment":         runtime.Interlocks.Snapshot(chamberID),
+				"equipment":         runtime.Interlocks.Snapshot(chamberID, stage),
+				"level":             runtime.Hydraulics.Assessment(chamberID, stage),
 				"emergency":         runtime.Safety.Status(chamberID),
 				"pending_commands":  runtime.GateCommands.Pending(chamberID),
 				"pending_equipment": runtime.Safety.Barrier().Pending(chamberID),

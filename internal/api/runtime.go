@@ -73,19 +73,26 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
-	levelByChamber := func(chamberID string) float64 {
-		samples := hydraulicsController.WindowSamples(chamberID)
-		if len(samples) == 0 {
-			return 0
+	levelEvidence := func(chamberID string, stage model.TransitStage) interlock.LevelEvidence {
+		evidence := interlock.LevelEvidence{Assessment: hydraulicsController.Assessment(chamberID, stage)}
+		// Entry-side gates only need to be sure the newest reading is not
+		// abnormal or missing; an empty window is allowed there. The sealed
+		// gate is gated by the structured verdict instead.
+		if samples := hydraulicsController.RecentSamples(chamberID); len(samples) > 0 {
+			evidence.Present = true
+			if latest := samples[len(samples)-1]; latest.Quality.Usable() {
+				evidence.LatestM = latest.Meters
+				evidence.Usable = true
+			}
 		}
-		return samples[len(samples)-1].Meters
+		return evidence
 	}
 	emergencyActive := func(chamberID string) bool {
 		return safetyCoordinator != nil && safetyCoordinator.Active(chamberID)
 	}
 	interlockCoordinator := interlock.NewCoordinator(
 		interlock.DefaultPolicy(), interlock.NewArbiter(), gateController,
-		levelByChamber, emergencyActive,
+		levelEvidence, emergencyActive,
 	)
 	cycleCoordinator := cycle.NewCoordinator(gateController, hydraulicsController, recorder, now)
 	cycleService := cycle.NewService(cycleCoordinator, admissionService)
@@ -114,7 +121,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		Planner: planner, Schedule: scheduleService, Hydraulics: hydraulicsController,
 		Interlocks: interlockCoordinator, Cycles: cycleCoordinator, CycleService: cycleService,
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
-		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
+		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, hydraulicsController, admissionService, signalService, safetyService, now),
 		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
 		Chambers: chambers, Now: now,
 	}, nil
