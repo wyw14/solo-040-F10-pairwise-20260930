@@ -49,6 +49,8 @@ func (c *Coordinator) Start(ctx context.Context, plan model.ConvoyPlan) (model.T
 	if err != nil {
 		return model.TransitCycle{}, err
 	}
+	// A new transit must never inherit level samples from a previous one.
+	c.hydraulics.ResetChamber(plan.ChamberID)
 	if _, err := c.recorder.Record(ctx, plan.ChamberID, model.EventCycleCreated, cycleValue.ID, cycleValue.Generation, cycleValue); err != nil {
 		return model.TransitCycle{}, err
 	}
@@ -75,6 +77,7 @@ func (c *Coordinator) Cancel(ctx context.Context, chamberID, reason string) (mod
 	}
 	c.current[chamberID] = cycleValue
 	c.mu.Unlock()
+	c.hydraulics.ResetChamber(chamberID)
 	_, err := c.recorder.Record(ctx, chamberID, model.EventCycleAdvanced, cycleValue.ID, cycleValue.Generation, cycleValue)
 	return cycleValue, err
 }
@@ -131,6 +134,11 @@ func (c *Coordinator) ApplySignalHandoff(ctx context.Context, cycleID uuid.UUID,
 	cycleValue.UpdatedAt = c.now().UTC()
 	c.current[chamberID] = cycleValue
 	c.mu.Unlock()
+	if cycleValue.Stage.Terminal() {
+		// A finished transit keeps no window: late samples can never
+		// produce a release conclusion after the fact.
+		c.hydraulics.ResetChamber(chamberID)
+	}
 	_, err := c.recorder.Record(ctx, chamberID, model.EventCycleAdvanced, cycleValue.ID, generation, cycleValue)
 	return err
 }

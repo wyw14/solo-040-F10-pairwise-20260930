@@ -2,7 +2,10 @@ package hydraulics
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/wyw14/cry-96/internal/model"
@@ -34,11 +37,27 @@ func (w *LevelWindow) Begin(cycleID uuid.UUID, generation uint64) {
 	w.mu.Unlock()
 }
 
-func (w *LevelWindow) Add(sample model.LevelSample) error {
+// Reset drops the window identity and every sample, so a finished transit
+// leaves nothing behind for the next one.
+func (w *LevelWindow) Reset() {
+	w.mu.Lock()
+	w.cycleID = uuid.Nil
+	w.generation = 0
+	w.samples = nil
+	w.mu.Unlock()
+}
+
+func (w *LevelWindow) Add(sample model.LevelSample, policy LevelPolicy, now time.Time) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if sample.CycleID != w.cycleID || sample.Generation != w.generation {
 		return errors.New("sample belongs to another transit generation")
+	}
+	if err := validateSample(sample, policy, now); err != nil {
+		return err
+	}
+	if latest := len(w.samples) - 1; latest >= 0 && sample.ObservedAt.Before(w.samples[latest].ObservedAt) {
+		return errors.New("sample is older than the latest window sample")
 	}
 	w.samples = append(w.samples, sample)
 	if len(w.samples) > w.capacity {
@@ -47,22 +66,30 @@ func (w *LevelWindow) Add(sample model.LevelSample) error {
 	return nil
 }
 
-func (w *LevelWindow) Stable(tolerance float64) bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	if len(w.samples) != w.capacity {
-		return false
+// validateSample rejects abnormal observations so they can never support a
+// release conclusion.
+func validateSample(sample model.LevelSample, policy LevelPolicy, now time.Time) error {
+	if math.IsNaN(sample.Meters) || math.IsInf(sample.Meters, 0) {
+		return errors.New("sample level is not a finite number")
 	}
-	minimum, maximum := w.samples[0].Meters, w.samples[0].Meters
-	for _, sample := range w.samples[1:] {
-		if sample.Meters < minimum {
-			minimum = sample.Meters
-		}
-		if sample.Meters > maximum {
-			maximum = sample.Meters
-		}
+	if sample.Meters < policy.MinMeters || sample.Meters > policy.MaxMeters {
+		return fmt.Errorf("sample level %.3fm outside plausible range [%.1f, %.1f]",
+			sample.Meters, policy.MinMeters, policy.MaxMeters)
 	}
-	return maximum-minimum <= tolerance
+	if sample.ObservedAt.IsZero() {
+		return errors.New("sample observation time is required")
+	}
+	if sample.ObservedAt.After(now.Add(policy.MaxFutureSkew)) {
+		return errors.New("sample observed in the future")
+	}
+	if now.Sub(sample.ObservedAt) > policy.MaxSampleAge {
+		return fmt.Errorf("sample is older than %.0fs", policy.MaxSampleAge.Seconds())
+	}
+	return nil
+}
+
+func (w *LevelWindow) Verdict(policy LevelPolicy, now time.Time) LevelVerdict {
+	return evaluateSamples(w.Samples(), policy, now)
 }
 
 func (w *LevelWindow) Samples() []model.LevelSample {

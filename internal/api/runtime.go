@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wyw14/cry-96/internal/admission"
@@ -70,24 +72,50 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	planner := schedule.NewPlanner(admissionService, recorder, now)
 	scheduleService := schedule.NewService(planner, signalPublisher)
 	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
-	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
+	levelPolicies := map[string]hydraulics.LevelPolicy{
+		"chamber-1": {
+			MinSamples: 4, MinSpan: 30 * time.Second, FluctuationM: 0.05,
+			MaxSampleAge: 45 * time.Second,
+		},
+		"chamber-2": {
+			MinSamples: 5, MinSpan: 60 * time.Second, FluctuationM: 0.03,
+			MaxSampleAge: 30 * time.Second,
+		},
+	}
+	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, levelPolicies, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
+	var cycleCoord *cycle.Coordinator
 	levelByChamber := func(chamberID string) float64 {
-		samples := hydraulicsController.WindowSamples(chamberID)
-		if len(samples) == 0 {
+		if cycleCoord == nil {
 			return 0
 		}
-		return samples[len(samples)-1].Meters
+		cycleValue, ok := cycleCoord.Current(chamberID)
+		if !ok {
+			return 0
+		}
+		status := hydraulicsController.WindowStatus(chamberID, cycleValue.ID, cycleValue.Generation)
+		if len(status.Samples) == 0 {
+			return 0
+		}
+		return status.Samples[len(status.Samples)-1].Meters
 	}
 	emergencyActive := func(chamberID string) bool {
 		return safetyCoordinator != nil && safetyCoordinator.Active(chamberID)
 	}
+	releaseCheck := func(cycleValue model.TransitCycle) error {
+		status := hydraulicsController.WindowStatus(cycleValue.ChamberID, cycleValue.ID, cycleValue.Generation)
+		if status.Verdict.Stable {
+			return nil
+		}
+		return fmt.Errorf("gate open delayed: %s", strings.Join(status.Verdict.Reasons, "; "))
+	}
 	interlockCoordinator := interlock.NewCoordinator(
 		interlock.DefaultPolicy(), interlock.NewArbiter(), gateController,
-		levelByChamber, emergencyActive,
+		levelByChamber, emergencyActive, releaseCheck,
 	)
 	cycleCoordinator := cycle.NewCoordinator(gateController, hydraulicsController, recorder, now)
+	cycleCoord = cycleCoordinator
 	cycleService := cycle.NewService(cycleCoordinator, admissionService)
 	safetyCoordinator = safety.NewCoordinator(gateCommands, barrier, recorder, now)
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)

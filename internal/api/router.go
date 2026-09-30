@@ -40,6 +40,8 @@ func Router(runtime *Runtime, webDirectory string) http.Handler {
 		api.Post("/chambers/{chamberID}/reservation/release", releaseReservationHandler(runtime))
 		api.Post("/chambers/{chamberID}/commands/{commandID}/ack", commandAckHandler(runtime))
 		api.Post("/chambers/{chamberID}/valves/ramp", valveRampHandler(runtime))
+		api.Get("/chambers/{chamberID}/levels", levelStatusHandler(runtime))
+		api.Post("/chambers/{chamberID}/levels", submitLevelSampleHandler(runtime))
 		api.Post("/chambers/{chamberID}/emergency", emergencyHandler(runtime))
 		api.Post("/chambers/{chamberID}/equipment/pending", equipmentPendingHandler(runtime))
 		api.Post("/chambers/{chamberID}/equipment/settled", equipmentSettledHandler(runtime))

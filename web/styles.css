@@ -53,6 +53,11 @@ th { color: #91a0a8; font-weight: 600; }
 .status.warning::before { background: #f2c14e; }
 .status.critical::before { background: #ef6f6c; }
 .message { min-height: 22px; color: #f2c14e; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+h3 { font-size: 14px; margin: 0 0 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.level-block { border-top: 1px solid #2c3941; padding-top: 14px; margin-top: 14px; }
+.level-block:first-of-type { border-top: none; padding-top: 4px; margin-top: 10px; }
+.level-block .reasons { color: #f2c14e; font-size: 13px; margin: 8px 0; padding-left: 18px; }
+.level-block .sample-form { max-width: 420px; margin-top: 10px; margin-bottom: 0; }
 @media (max-width: 780px) {
   header { height: auto; padding: 14px 18px; align-items: flex-start; flex-direction: column; gap: 10px; }
   main { padding: 20px 16px 40px; }
